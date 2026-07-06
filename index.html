@@ -17,15 +17,13 @@
 <!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- jsQR 미리 로드 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 </head>
 <body>
 <div id="root"></div>
 
 <script>
-/* ════════════════════════════════════════════════════
-   ✅ Firebase 설정 완료 (dress-clinic-3216f / dressclinic.official 계정)
-   설정을 변경하려면 Firebase 콘솔 → 프로젝트 설정에서 확인
-   ════════════════════════════════════════════════════ */
 const firebaseConfig = {
   apiKey: "AIzaSyCPORYUoTEoz7vQR5XTEAjr1T8QDBkisJo",
   authDomain: "dress-clinic-3216f.firebaseapp.com",
@@ -34,18 +32,12 @@ const firebaseConfig = {
   messagingSenderId: "432660211781",
   appId: "1:432660211781:web:40c9f8df06ff11bf86db2c"
 };
-/* ════════════════════════════════════════════════════ */
-
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
-// 환자 데이터 함수 (Firestore: 환자 1명 = 문서 1개)
 async function loadPatients(){
   const snap = await db.collection("patients").orderBy("submittedAt","desc").get();
   return snap.docs.map(d => d.data());
-}
-async function savePatient(record){
-  await db.collection("patients").doc(record.id).set(record);
 }
 async function deletePatient(id){
   await db.collection("patients").doc(id).delete();
@@ -65,7 +57,6 @@ const ADMIN_PW = "dress2024";
 const MONTHS = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
 const DAYS = ["일","월","화","수","목","금","토"];
 
-// ── 공통 스타일 ──
 const s = {
   page: { fontFamily:"'Noto Sans KR',sans-serif", background:C.bg, minHeight:"100vh" },
   header: { background:C.white, borderBottom:`1px solid ${C.border}`, padding:"12px 16px", display:"flex", alignItems:"center", gap:10, position:"sticky", top:0, zIndex:100 },
@@ -75,85 +66,132 @@ const s = {
 const inp = { width:"100%", padding:"10px 12px", border:`1.5px solid ${C.border}`, borderRadius:8, fontFamily:"inherit", fontSize:14, color:C.ink, background:C.white, outline:"none", boxSizing:"border-box" };
 
 // ════════════════════════
-// QR 스캔 (카메라 인식 + 수동 입력 대체)
+// QR 스캐너
 // ════════════════════════
 function QRScanner({ patients, onFound, onClose }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const rafRef = useRef(null);
   const [manualCode, setManualCode] = useState("");
   const [error, setError] = useState("");
-  const [cameraOn, setCameraOn] = useState(false);
+  const [status, setStatus] = useState("카메라 시작 중...");
+  const foundRef = useRef(false);
 
   const tryFind = (code) => {
     const target = (code||"").trim();
     if(!target) return;
     const found = patients.find(p => p.id === target);
     if(found){ onFound(found); }
-    else setError("일치하는 접수 정보를 찾을 수 없습니다. 코드를 다시 확인해 주세요.");
+    else setError("일치하는 접수 정보를 찾을 수 없어요. 코드를 다시 확인해 주세요.");
   };
 
   useEffect(() => {
-    let raf, stopped = false;
-    const start = async () => {
+    let stopped = false;
+
+    const startCamera = async () => {
       try {
-        if(!window.jsQR){
-          await new Promise((res, rej) => {
-            const sc = document.createElement("script");
-            sc.src = "https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js";
-            sc.onload = res; sc.onerror = rej;
-            document.head.appendChild(sc);
-          });
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        // 카메라 스트림 요청
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
         if(stopped){ stream.getTracks().forEach(t=>t.stop()); return; }
         streamRef.current = stream;
-        setCameraOn(true);
-        if(videoRef.current){ videoRef.current.srcObject = stream; await videoRef.current.play(); }
-        const tick = () => {
-          if(stopped) return;
+        const video = videoRef.current;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", true);
+        await video.play();
+        setStatus("QR 코드를 화면에 비춰주세요");
+
+        // QR 스캔 루프
+        const scan = () => {
+          if(stopped || foundRef.current) return;
           const v = videoRef.current, c = canvasRef.current;
-          if(v && v.readyState === v.HAVE_ENOUGH_DATA){
-            c.width = v.videoWidth; c.height = v.videoHeight;
+          if(v && v.readyState === v.HAVE_ENOUGH_DATA && c){
+            c.width = v.videoWidth;
+            c.height = v.videoHeight;
             const ctx = c.getContext("2d");
             ctx.drawImage(v, 0, 0, c.width, c.height);
-            const img = ctx.getImageData(0, 0, c.width, c.height);
-            const code = window.jsQR(img.data, img.width, img.height);
-            if(code && code.data){ tryFind(code.data); return; }
+            const imageData = ctx.getImageData(0, 0, c.width, c.height);
+            if(window.jsQR){
+              const code = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+              if(code && code.data){
+                foundRef.current = true;
+                tryFind(code.data);
+                return;
+              }
+            }
           }
-          raf = requestAnimationFrame(tick);
+          rafRef.current = requestAnimationFrame(scan);
         };
-        tick();
+        rafRef.current = requestAnimationFrame(scan);
+
       } catch(e) {
-        setError("카메라를 사용할 수 없는 환경이에요. 아래에 환자 화면의 확인 코드를 직접 입력해 주세요.");
+        if(!stopped){
+          setStatus("");
+          if(e.name === "NotAllowedError"){
+            setError("카메라 권한이 거부되었어요.\n브라우저 설정에서 카메라 권한을 허용해 주세요.\n\n아래 확인 코드 입력을 이용해 주세요.");
+          } else if(e.name === "NotFoundError"){
+            setError("카메라를 찾을 수 없어요.\n아래 확인 코드 입력을 이용해 주세요.");
+          } else {
+            setError(`카메라 오류: ${e.message}\n아래 확인 코드 입력을 이용해 주세요.`);
+          }
+        }
       }
     };
-    start();
+
+    startCamera();
+
     return () => {
       stopped = true;
-      cancelAnimationFrame(raf);
+      cancelAnimationFrame(rafRef.current);
       if(streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     };
   }, []);
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(20,14,15,.85)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+    <div style={{ position:"fixed", inset:0, background:"rgba(20,14,15,.9)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
       <div style={{ background:C.white, borderRadius:16, padding:20, width:"100%", maxWidth:380, boxShadow:"0 8px 32px rgba(0,0,0,.3)" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
           <div style={{ fontWeight:700, color:C.ink, fontSize:16 }}>📷 QR 코드 스캔</div>
-          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:22, cursor:"pointer", color:C.inkMd, lineHeight:1 }}>×</button>
+          <button onClick={onClose} style={{ background:"none", border:"none", fontSize:24, cursor:"pointer", color:C.inkMd, lineHeight:1 }}>×</button>
         </div>
-        <div style={{ position:"relative", borderRadius:12, overflow:"hidden", background:"#111", marginBottom:14, minHeight:cameraOn?200:0 }}>
-          <video ref={videoRef} style={{ width:"100%", display:cameraOn?"block":"none" }} muted playsInline />
+
+        {/* 카메라 뷰 */}
+        <div style={{ position:"relative", borderRadius:12, overflow:"hidden", background:"#111", marginBottom:14, aspectRatio:"4/3" }}>
+          <video ref={videoRef} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} muted playsInline />
           <canvas ref={canvasRef} style={{ display:"none" }} />
+          {/* 스캔 가이드 */}
+          <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
+            <div style={{ width:180, height:180, border:"3px solid rgba(200,145,154,.8)", borderRadius:12, boxShadow:"0 0 0 9999px rgba(0,0,0,.35)" }}/>
+          </div>
+          {status && (
+            <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:12, textAlign:"center", padding:"8px 12px" }}>
+              {status}
+            </div>
+          )}
         </div>
-        {error && <div style={{ fontSize:12, color:C.rose, marginBottom:10, lineHeight:1.6 }}>{error}</div>}
-        <div style={{ fontSize:12, color:C.inkMd, marginBottom:6 }}>환자 화면에 표시된 확인 코드를 입력해도 동일하게 조회돼요</div>
+
+        {error && (
+          <div style={{ fontSize:12, color:C.rose, marginBottom:12, lineHeight:1.7, background:C.roseLt, borderRadius:8, padding:"10px 12px", whiteSpace:"pre-line" }}>
+            {error}
+          </div>
+        )}
+
+        {/* 수동 입력 */}
+        <div style={{ fontSize:12, color:C.inkMd, marginBottom:8, fontWeight:600 }}>확인 코드 직접 입력</div>
         <div style={{ display:"flex", gap:8 }}>
-          <input style={inp} placeholder="확인 코드 입력" value={manualCode}
+          <input
+            style={inp}
+            placeholder="환자 화면의 확인 코드 입력"
+            value={manualCode}
             onChange={e=>{ setManualCode(e.target.value); setError(""); }}
-            onKeyDown={e=>e.key==="Enter"&&tryFind(manualCode)} />
-          <button onClick={()=>tryFind(manualCode)} style={{ background:C.roseDk, border:"none", borderRadius:8, padding:"0 16px", fontSize:13, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit" }}>확인</button>
+            onKeyDown={e=>e.key==="Enter"&&tryFind(manualCode)}
+          />
+          <button
+            onClick={()=>tryFind(manualCode)}
+            style={{ background:C.roseDk, border:"none", borderRadius:8, padding:"0 16px", fontSize:13, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}
+          >확인</button>
         </div>
       </div>
     </div>
@@ -199,8 +237,7 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
     setMonth(m); setYear(y);
   };
 
-  // 이 달 예약 집계
-  const apptMap = {}; // { "2026-06-29": [patient, ...] }
+  const apptMap = {};
   patients.forEach(p => {
     if(!p.apptDate) return;
     const [py,pm] = p.apptDate.split("-");
@@ -217,7 +254,6 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
 
   return (
     <div style={s.page}>
-      {/* 헤더 */}
       <div style={{...s.header, justifyContent:"space-between"}}>
         <div>
           <div style={{fontSize:10, letterSpacing:".16em", color:C.rose, textTransform:"uppercase"}}>DRESS Plastic Surgery</div>
@@ -233,7 +269,6 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
       </div>
 
       <div style={{padding:"16px 16px 80px"}}>
-        {/* 월 이동 */}
         <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16}}>
           <button onClick={()=>chMonth(-1)} style={{width:36, height:36, border:`1px solid ${C.border}`, borderRadius:"50%", background:C.white, fontSize:18, cursor:"pointer", color:C.inkMd}}>‹</button>
           <div style={{textAlign:"center"}}>
@@ -243,15 +278,12 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
           <button onClick={()=>chMonth(1)} style={{width:36, height:36, border:`1px solid ${C.border}`, borderRadius:"50%", background:C.white, fontSize:18, cursor:"pointer", color:C.inkMd}}>›</button>
         </div>
 
-        {/* 달력 */}
         <div style={{background:C.white, borderRadius:16, boxShadow:"0 2px 10px rgba(43,34,36,.07)", overflow:"hidden", marginBottom:16}}>
-          {/* 요일 헤더 */}
           <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", background:C.roseLt, padding:"8px 0"}}>
             {DAYS.map((d,i)=>(
               <div key={d} style={{textAlign:"center", fontSize:11, fontWeight:700, color:i===0?"#C06060":i===6?"#6080C0":C.inkMd}}>{d}</div>
             ))}
           </div>
-          {/* 날짜 */}
           <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:1, padding:"4px"}}>
             {Array(firstDay).fill(null).map((_,i)=><div key={"e"+i}/>)}
             {Array(daysInMonth).fill(null).map((_,i)=>{
@@ -263,21 +295,8 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
               const hasAppt = appts.length > 0;
               return (
                 <div key={d} onClick={()=>hasAppt&&onDayClick(dateStr, appts)}
-                  style={{
-                    padding:"6px 4px", borderRadius:10, cursor:hasAppt?"pointer":"default",
-                    background:isToday?"rgba(200,145,154,.08)":"transparent",
-                    transition:"background .15s",
-                    minHeight:52,
-                  }}
-                  onMouseEnter={e=>{ if(hasAppt) e.currentTarget.style.background="rgba(200,145,154,.12)"; }}
-                  onMouseLeave={e=>{ e.currentTarget.style.background=isToday?"rgba(200,145,154,.08)":"transparent"; }}
-                >
-                  <div style={{
-                    width:26, height:26, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 3px",
-                    background:isToday?C.rose:"transparent",
-                    fontSize:13, fontWeight:isToday?700:400,
-                    color:isToday?"#fff":dow===0?"#C06060":dow===6?"#6080C0":C.ink,
-                  }}>{d}</div>
+                  style={{ padding:"6px 4px", borderRadius:10, cursor:hasAppt?"pointer":"default", background:isToday?"rgba(200,145,154,.08)":"transparent", minHeight:52 }}>
+                  <div style={{ width:26, height:26, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 3px", background:isToday?C.rose:"transparent", fontSize:13, fontWeight:isToday?700:400, color:isToday?"#fff":dow===0?"#C06060":dow===6?"#6080C0":C.ink }}>{d}</div>
                   {hasAppt && (
                     <div style={{textAlign:"center"}}>
                       <div style={{background:C.rose, color:"#fff", borderRadius:10, fontSize:10, fontWeight:700, padding:"1px 5px", display:"inline-block"}}>{appts.length}</div>
@@ -289,7 +308,6 @@ function CalendarView({ patients, onDayClick, onLogout, onScan }) {
           </div>
         </div>
 
-        {/* 오늘 예약 미리보기 */}
         {apptMap[todayStr]&&apptMap[todayStr].length>0 && (
           <div style={s.card}>
             <div style={{fontSize:12, fontWeight:700, color:C.roseDk, marginBottom:10}}>📅 오늘 예약</div>
@@ -317,7 +335,6 @@ function DayView({ dateStr, patients, onBack, onSelect }) {
   const [y,m,d] = dateStr.split("-");
   const dow = DAYS[new Date(+y,+m-1,+d).getDay()];
   const sorted = [...patients].sort((a,b)=>(a.apptTime||"").localeCompare(b.apptTime||""));
-
   return (
     <div style={s.page}>
       <div style={s.header}>
@@ -327,18 +344,14 @@ function DayView({ dateStr, patients, onBack, onSelect }) {
           <div style={{fontSize:12, color:C.inkLt}}>예약 {patients.length}명</div>
         </div>
       </div>
-
       <div style={{padding:"16px"}}>
-        {/* 시간대별 목록 */}
         {sorted.map(p=>(
           <div key={p.id} onClick={()=>onSelect(p)}
             style={{...s.card, display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:10}}>
-            {/* 시간 */}
             <div style={{textAlign:"center", flexShrink:0, width:48}}>
               <div style={{fontSize:15, fontWeight:700, color:C.rose}}>{p.apptTime||"—"}</div>
             </div>
             <div style={{width:1, height:40, background:C.border, flexShrink:0}}/>
-            {/* 환자 정보 */}
             <div style={{width:40, height:40, borderRadius:"50%", background:C.roseLt, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:C.roseDk, flexShrink:0}}>{p.name?.[0]||"?"}</div>
             <div style={{flex:1}}>
               <div style={{fontWeight:700, fontSize:15, color:C.ink}}>{p.name}</div>
@@ -387,20 +400,17 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
 
   return (
     <div style={{fontFamily:"'Noto Sans KR',sans-serif", background:"#c8c8c8", minHeight:"100vh", paddingBottom:40}}>
-      {/* 툴바 */}
       <div style={{background:C.white, borderBottom:`1px solid ${C.border}`, padding:"10px 16px", display:"flex", gap:8, alignItems:"center", position:"sticky", top:0, zIndex:100}}>
         <button onClick={onBack} style={{background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 14px", fontSize:13, color:C.inkMd, cursor:"pointer", fontFamily:"inherit"}}>← 목록</button>
         <span style={{flex:1, fontSize:12, color:C.inkMd}}>이미지로 저장하거나 스크린샷으로 캡처하세요</span>
         <button onClick={saveImage} disabled={saving}
-          style={{background:C.rose, border:"none", borderRadius:8, padding:"8px 18px", fontSize:13, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit", opacity:saving?.6:1}}>
+          style={{background:C.rose, border:"none", borderRadius:8, padding:"8px 18px", fontSize:13, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit", opacity:saving?0.6:1}}>
           {saving?"저장 중...":"📥 이미지 저장"}
         </button>
         <button onClick={()=>onDelete(p.id)} style={{background:"none", border:`1px solid ${C.rose}`, borderRadius:8, padding:"8px 12px", fontSize:13, color:C.rose, cursor:"pointer", fontFamily:"inherit"}}>삭제</button>
       </div>
 
-      {/* A4 차트 */}
       <div ref={chartRef} style={{background:"#ffffff", width:794, minHeight:1000, margin:"24px auto", padding:"40px 44px", boxSizing:"border-box", boxShadow:"0 6px 32px rgba(0,0,0,.20)", fontFamily:"'Noto Sans KR',sans-serif"}}>
-        {/* 헤더 */}
         <div style={{display:"flex", alignItems:"flex-end", justifyContent:"space-between", borderBottom:`3px solid ${C.roseDk}`, paddingBottom:14, marginBottom:20}}>
           <div>
             <div style={{fontSize:24, fontWeight:700, color:C.roseDk, letterSpacing:".04em"}}>드레스성형외과</div>
@@ -411,7 +421,6 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
             <div style={{fontSize:10, color:C.inkLt, marginTop:4}}>접수일시 : {fmtDt(p.submittedAt)}</div>
           </div>
         </div>
-
         <table style={{width:"100%", borderCollapse:"collapse", marginBottom:18}}>
           <tbody>
             <tr><td colSpan={4} style={SEC}>▸ 예약 정보</td></tr>
@@ -420,14 +429,12 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
               <td style={{...TH, width:80}}>예약 시간</td><td style={TD}>{p.apptTime||"—"}</td>
             </tr>
             <tr><td style={TH}>방문 경로</td><td colSpan={3} style={TD}>{routeLabel||"—"}</td></tr>
-
             <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
             <tr><td colSpan={4} style={SEC}>▸ 상담 정보</td></tr>
             <tr><td style={TH}>상담 분야</td><td colSpan={3} style={TD}>{p.consultField||"—"}</td></tr>
             {p.eyeTiming&&<tr><td style={TH}>눈수술 시기</td><td colSpan={3} style={TD}>{p.eyeTiming}</td></tr>}
             <tr><td style={TH}>시술 경험</td><td colSpan={3} style={TD}>{p.experience||"—"}</td></tr>
             <tr><td style={TH}>이상 증상</td><td colSpan={3} style={TD}>{p.symptom||"—"}</td></tr>
-
             <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
             <tr><td colSpan={4} style={SEC}>▸ 환자 정보</td></tr>
             <tr>
@@ -439,13 +446,11 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
               <td style={TH}>보호자 연락처</td><td style={TD}>{p.guardianPhone||"—"}</td>
             </tr>
             <tr><td style={TH}>주&nbsp;&nbsp;&nbsp;소</td><td colSpan={3} style={TD}>{p.address||"—"}</td></tr>
-
             <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
             <tr><td colSpan={4} style={SEC}>▸ 건강 정보</td></tr>
             <tr><td style={TH}>지&nbsp;&nbsp;&nbsp;병</td><td colSpan={3} style={TD}>{p.diseases||"—"}</td></tr>
             <tr><td style={TH}>복 용 약</td><td colSpan={3} style={TD}>{p.meds||"—"}</td></tr>
             <tr><td style={TH}>알레르기</td><td colSpan={3} style={TD}>{p.allergy||"—"}</td></tr>
-
             <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
             <tr><td colSpan={4} style={SEC}>▸ 동의 사항</td></tr>
             <tr>
@@ -454,8 +459,6 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
             </tr>
           </tbody>
         </table>
-
-        {/* 서명 */}
         <div style={{border:`1.5px solid ${C.border}`, borderRadius:8, padding:"16px 20px", display:"flex", gap:24, alignItems:"stretch", marginBottom:18}}>
           <div style={{flex:1}}>
             <div style={{fontSize:11, fontWeight:700, color:C.roseDk, marginBottom:10}}>본인 확인 및 서명</div>
@@ -471,7 +474,6 @@ function PatientDetail({ patient: p, onBack, onDelete }) {
             }
           </div>
         </div>
-
         <div style={{display:"flex", justifyContent:"space-between", fontSize:9, color:C.inkLt, borderTop:`1px solid ${C.border}`, paddingTop:10}}>
           <span>* 본 차트는 내원 전 사전 작성된 접수 자료입니다.</span>
           <span>No. {p.id}</span>
@@ -488,17 +490,16 @@ function App() {
   const [authed, setAuthed] = useState(false);
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("calendar"); // calendar | day | detail
+  const [view, setView] = useState("calendar");
   const [dayData, setDayData] = useState({ dateStr:"", patients:[] });
   const [selected, setSelected] = useState(null);
-  const [detailBack, setDetailBack] = useState("day"); // day | calendar
+  const [detailBack, setDetailBack] = useState("day");
   const [scannerOpen, setScannerOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
-    try {
-      setPatients(await loadPatients());
-    } catch(_){ setPatients([]); }
+    try { setPatients(await loadPatients()); }
+    catch(_){ setPatients([]); }
     setLoading(false);
   };
 
@@ -506,15 +507,9 @@ function App() {
 
   const handleDelete = async (id) => {
     if(!confirm("이 접수 기록을 삭제하시겠습니까?")) return;
-    const next = patients.filter(p=>p.id!==id);
     await deletePatient(id);
-    setPatients(next);
+    setPatients(prev => prev.filter(p=>p.id!==id));
     setView("calendar");
-  };
-
-  const handleDayClick = (dateStr, dayPatients) => {
-    setDayData({ dateStr, patients: dayPatients });
-    setView("day");
   };
 
   const handleScanFound = (patient) => {
@@ -525,40 +520,48 @@ function App() {
   };
 
   if(!authed) return <Login onLogin={()=>setAuthed(true)}/>;
-  if(loading) return <div style={{...s.page, display:"flex", alignItems:"center", justifyContent:"center", color:C.inkLt}}>불러오는 중...</div>;
+  if(loading) return (
+    <div style={{...s.page, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:12, color:C.inkLt}}>
+      <div style={{fontSize:32}}>🌸</div>
+      <div style={{fontSize:14}}>불러오는 중...</div>
+    </div>
+  );
 
-  if(view==="calendar") return (
+  return (
     <>
-      <CalendarView
-        patients={patients}
-        onDayClick={handleDayClick}
-        onLogout={()=>{ setAuthed(false); setView("calendar"); }}
-        onScan={()=>setScannerOpen(true)}
-      />
-      {scannerOpen && <QRScanner patients={patients} onFound={handleScanFound} onClose={()=>setScannerOpen(false)}/>}
+      {view==="calendar" && (
+        <CalendarView
+          patients={patients}
+          onDayClick={(dateStr, appts)=>{ setDayData({dateStr, patients:appts}); setView("day"); }}
+          onLogout={()=>{ setAuthed(false); setView("calendar"); }}
+          onScan={()=>setScannerOpen(true)}
+        />
+      )}
+      {view==="day" && (
+        <DayView
+          dateStr={dayData.dateStr}
+          patients={dayData.patients}
+          onBack={()=>setView("calendar")}
+          onSelect={p=>{ setSelected(p); setDetailBack("day"); setView("detail"); }}
+        />
+      )}
+      {view==="detail" && (
+        <PatientDetail
+          patient={selected}
+          onBack={()=>setView(detailBack)}
+          onDelete={handleDelete}
+        />
+      )}
+      {scannerOpen && (
+        <QRScanner
+          patients={patients}
+          onFound={handleScanFound}
+          onClose={()=>setScannerOpen(false)}
+        />
+      )}
     </>
   );
-
-  if(view==="day") return (
-    <DayView
-      dateStr={dayData.dateStr}
-      patients={dayData.patients}
-      onBack={()=>setView("calendar")}
-      onSelect={p=>{ setSelected(p); setDetailBack("day"); setView("detail"); }}
-    />
-  );
-
-  if(view==="detail") return (
-    <PatientDetail
-      patient={selected}
-      onBack={()=>setView(detailBack)}
-      onDelete={handleDelete}
-    />
-  );
-
-  return null;
 }
-
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
