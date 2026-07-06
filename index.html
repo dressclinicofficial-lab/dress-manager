@@ -78,12 +78,19 @@ function QRScanner({ patients, onFound, onClose }) {
   const [status, setStatus] = useState("카메라 시작 중...");
   const foundRef = useRef(false);
 
+  const [scanned, setScanned] = useState("");
+
   const tryFind = (code) => {
     const target = (code||"").trim();
     if(!target) return;
+    setScanned(target); // 읽힌 값 표시
     const found = patients.find(p => p.id === target);
     if(found){ onFound(found); }
-    else setError("일치하는 접수 정보를 찾을 수 없어요. 코드를 다시 확인해 주세요.");
+    else {
+      setError(`읽힌 코드: "${target}"\n일치하는 접수 정보를 찾을 수 없어요.\n아래에 코드를 직접 입력하거나 복사해서 넣어보세요.`);
+      setManualCode(target); // 읽힌 값 자동으로 수동 입력란에 넣기
+      foundRef.current = false; // 재시도 허용
+    }
   };
 
   useEffect(() => {
@@ -91,7 +98,6 @@ function QRScanner({ patients, onFound, onClose }) {
 
     const startCamera = async () => {
       try {
-        // 카메라 스트림 요청
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
         });
@@ -114,7 +120,8 @@ function QRScanner({ patients, onFound, onClose }) {
             ctx.drawImage(v, 0, 0, c.width, c.height);
             const imageData = ctx.getImageData(0, 0, c.width, c.height);
             if(window.jsQR){
-              const code = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "dontInvert" });
+              // attemptBoth: 밝은/어두운 QR 모두 시도
+              const code = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
               if(code && code.data){
                 foundRef.current = true;
                 tryFind(code.data);
@@ -175,6 +182,11 @@ function QRScanner({ patients, onFound, onClose }) {
         {error && (
           <div style={{ fontSize:12, color:C.rose, marginBottom:12, lineHeight:1.7, background:C.roseLt, borderRadius:8, padding:"10px 12px", whiteSpace:"pre-line" }}>
             {error}
+          </div>
+        )}
+        {!error && scanned && (
+          <div style={{ fontSize:12, color:C.inkMd, marginBottom:12, background:"#f0f9f0", borderRadius:8, padding:"10px 12px" }}>
+            📡 읽힌 코드: <b>{scanned}</b>
           </div>
         )}
 
