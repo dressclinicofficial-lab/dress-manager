@@ -658,3 +658,663 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 </script>
 </body>
 </html>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>드레스성형외과 관리자</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0}
+  body{font-family:'Noto Sans KR',sans-serif;background:#FBF7F7}
+  input,button,textarea{font-family:inherit}
+</style>
+<!-- React -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- ZXing QR 스캐너 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyCPORYUoTEoz7vQR5XTEAjr1T8QDBkisJo",
+  authDomain: "dress-clinic-3216f.firebaseapp.com",
+  projectId: "dress-clinic-3216f",
+  storageBucket: "dress-clinic-3216f.firebasestorage.app",
+  messagingSenderId: "432660211781",
+  appId: "1:432660211781:web:40c9f8df06ff11bf86db2c"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+async function loadPatients(){
+  const snap = await db.collection("patients").orderBy("submittedAt","desc").get();
+  return snap.docs.map(d => d.data());
+}
+async function deletePatient(id){
+  await db.collection("patients").doc(id).delete();
+}
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const C = {
+  rose:"#C8919A", roseLt:"#F5E8EA", roseDk:"#9E6069",
+  ink:"#2B2224", inkMd:"#6B5457", inkLt:"#A89496",
+  bg:"#FBF7F7", white:"#FFFFFF", border:"#E8D9DB",
+};
+
+const ADMIN_PW = "dress2024";
+const MONTHS = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+const DAYS = ["일","월","화","수","목","금","토"];
+
+const s = {
+  page: { fontFamily:"'Noto Sans KR',sans-serif", background:C.bg, minHeight:"100vh" },
+  header: { background:C.white, borderBottom:`1px solid ${C.border}`, padding:"12px 16px", display:"flex", alignItems:"center", gap:10, position:"sticky", top:0, zIndex:100 },
+  backBtn: { width:36, height:36, border:`1px solid ${C.border}`, borderRadius:"50%", background:"none", fontSize:18, cursor:"pointer", color:C.inkMd, display:"flex", alignItems:"center", justifyContent:"center" },
+  card: { background:C.white, borderRadius:12, boxShadow:"0 2px 10px rgba(43,34,36,.07)", padding:"16px", marginBottom:12 },
+};
+const inp = { width:"100%", padding:"10px 12px", border:`1.5px solid ${C.border}`, borderRadius:8, fontFamily:"inherit", fontSize:14, color:C.ink, background:C.white, outline:"none", boxSizing:"border-box" };
+
+// ════════════════════════
+// QR 스캐너
+// ════════════════════════
+function QRScanner({ patients, onFound, onClose }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const [manualCode, setManualCode] = useState("");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("카메라 시작 중...");
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const stoppedRef = useRef(false);
+  const foundRef = useRef(false);
+
+  // QR 인식되면 입력란에 채우기만 (자동이동 X)
+  const onQRRead = (code) => {
+    const target = (code||"").trim();
+    if(!target) return;
+    foundRef.current = true; // 스캔 중지
+    setManualCode(target);
+    setStatus("✅ QR 인식 완료! 확인 버튼을 눌러주세요");
+    setError("");
+  };
+
+  // 확인 버튼 누르면 환자 찾기
+  const tryFind = (code) => {
+    const target = (code||"").trim();
+    if(!target) return;
+    const found = patients.find(p => p.id === target);
+    if(found){
+      if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+      onFound(found);
+    } else {
+      setError(`"${target}" — 일치하는 환자를 찾을 수 없어요.`);
+    }
+  };
+
+  useEffect(() => {
+    stoppedRef.current = false;
+    foundRef.current = false;
+
+    const startScan = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        });
+        if(stoppedRef.current){ stream.getTracks().forEach(t=>t.stop()); return; }
+        streamRef.current = stream;
+
+        const video = videoRef.current;
+        video.srcObject = stream;
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("autoplay", "true");
+        video.muted = true;
+        await video.play();
+        setStatus("QR 코드를 화면 가운데에 비춰주세요");
+
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+        const scan = () => {
+          if(stoppedRef.current || foundRef.current) return;
+
+          if(video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0){
+            canvas.width  = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            if(window.jsQR){
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const result = window.jsQR(imgData.data, imgData.width, imgData.height, {
+                inversionAttempts: "attemptBoth"
+              });
+              if(result && result.data){
+                foundRef.current = true;
+                onQRRead(result.data);
+                return;
+              }
+            }
+          }
+          rafRef.current = requestAnimationFrame(scan);
+        };
+
+        // 비디오 로드 후 스캔 시작
+        video.onloadedmetadata = () => {
+          rafRef.current = requestAnimationFrame(scan);
+        };
+        // 이미 로드됐으면 바로 시작
+        if(video.readyState >= video.HAVE_ENOUGH_DATA){
+          rafRef.current = requestAnimationFrame(scan);
+        }
+
+      } catch(e) {
+        setStatus("");
+        if(e.name === "NotAllowedError"){
+          setError("카메라 권한이 거부됐어요.\n브라우저 주소창 옆 🔒 아이콘 → 카메라 허용");
+        } else {
+          setError("카메라 오류: " + e.name + "\n아래 확인 코드를 직접 입력해 주세요.");
+        }
+      }
+    };
+
+    startScan();
+
+    return () => {
+      stoppedRef.current = true;
+      cancelAnimationFrame(rafRef.current);
+      if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    };
+  }, []);
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.9)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:C.white,borderRadius:16,padding:20,width:"100%",maxWidth:400,boxShadow:"0 8px 32px rgba(0,0,0,.4)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{fontWeight:700,color:C.ink,fontSize:16}}>📷 QR 코드 스캔</div>
+          <button onClick={onClose} style={{background:"none",border:"none",fontSize:26,cursor:"pointer",color:C.inkMd,lineHeight:1}}>×</button>
+        </div>
+
+        {/* 카메라 뷰 */}
+        <div style={{position:"relative",borderRadius:12,overflow:"hidden",background:"#000",marginBottom:14,aspectRatio:"1/1"}}>
+          <video ref={videoRef} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}} muted playsInline />
+          <canvas ref={canvasRef} style={{display:"none"}} />
+
+          {/* 스캔 가이드 */}
+          <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}>
+            <div style={{width:"65%",aspectRatio:"1/1",position:"relative"}}>
+              {/* 반투명 배경 */}
+              <div style={{position:"absolute",inset:0,border:"2px solid rgba(255,255,255,.6)",borderRadius:8}}/>
+              {/* 모서리 분홍 강조 */}
+              {[
+                {top:0,left:0,borderTop:`3px solid ${C.rose}`,borderLeft:`3px solid ${C.rose}`,borderRadius:"6px 0 0 0"},
+                {top:0,right:0,borderTop:`3px solid ${C.rose}`,borderRight:`3px solid ${C.rose}`,borderRadius:"0 6px 0 0"},
+                {bottom:0,left:0,borderBottom:`3px solid ${C.rose}`,borderLeft:`3px solid ${C.rose}`,borderRadius:"0 0 0 6px"},
+                {bottom:0,right:0,borderBottom:`3px solid ${C.rose}`,borderRight:`3px solid ${C.rose}`,borderRadius:"0 0 6px 0"},
+              ].map((st,i)=>(
+                <div key={i} style={{position:"absolute",width:24,height:24,...st}}/>
+              ))}
+            </div>
+          </div>
+
+          {/* 스캔 라인 애니메이션 */}
+          <style>{`
+            @keyframes scanLine {
+              0%   { top: 20%; }
+              50%  { top: 78%; }
+              100% { top: 20%; }
+            }
+          `}</style>
+          <div style={{
+            position:"absolute",left:"18%",right:"18%",height:2,
+            background:`linear-gradient(90deg, transparent, ${C.rose}, transparent)`,
+            animation:"scanLine 2s ease-in-out infinite",
+            pointerEvents:"none"
+          }}/>
+
+          {status && !error && (
+            <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,.65)",color:"#fff",fontSize:12,textAlign:"center",padding:"8px 0"}}>
+              {status}
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <div style={{fontSize:12,color:C.rose,marginBottom:12,lineHeight:1.7,background:C.roseLt,borderRadius:8,padding:"10px 12px",whiteSpace:"pre-line"}}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        <div style={{height:1,background:C.border,marginBottom:12}}/>
+        <div style={{fontSize:12,color:C.inkMd,marginBottom:8,fontWeight:600}}>
+          {manualCode ? "📡 QR 인식됨 — 확인 버튼을 눌러주세요" : "확인 코드 직접 입력"}
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom: manualCode ? 10 : 0}}>
+          <input style={{
+            ...inp,
+            borderColor: manualCode ? C.rose : C.border,
+            fontWeight: manualCode ? 700 : 400,
+            fontSize: manualCode ? 16 : 14,
+          }}
+            placeholder="QR 스캔 또는 확인 코드 입력"
+            value={manualCode}
+            onChange={e=>{setManualCode(e.target.value);setError("");}}
+            onKeyDown={e=>e.key==="Enter"&&tryFind(manualCode)}
+          />
+        </div>
+        <button onClick={()=>tryFind(manualCode)}
+          disabled={!manualCode}
+          style={{
+            width:"100%", padding:"14px 0",
+            background: manualCode ? C.roseDk : C.border,
+            border:"none", borderRadius:10,
+            fontSize:15, fontWeight:700,
+            color: manualCode ? "#fff" : C.inkLt,
+            cursor: manualCode ? "pointer" : "not-allowed",
+            fontFamily:"inherit",
+            transition:"all .2s"
+          }}>
+          {manualCode ? "✅ 확인 — 환자 차트 열기" : "QR을 비춰주세요"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════
+// 로그인
+// ════════════════════════
+function Login({ onLogin }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState(false);
+  const try_ = () => pw === ADMIN_PW ? onLogin() : setErr(true);
+  return (
+    <div style={{...s.page, display:"flex", alignItems:"center", justifyContent:"center"}}>
+      <div style={{background:C.white, borderRadius:16, padding:"32px 28px", width:"100%", maxWidth:340, boxShadow:"0 4px 24px rgba(43,34,36,.12)"}}>
+        <div style={{textAlign:"center", marginBottom:24}}>
+          <div style={{fontSize:11, letterSpacing:".18em", color:C.rose, textTransform:"uppercase", marginBottom:4}}>DRESS Plastic Surgery</div>
+          <div style={{fontSize:18, fontWeight:700, color:C.ink}}>관리자</div>
+        </div>
+        <input type="password" placeholder="비밀번호"
+          style={{width:"100%", padding:"11px 13px", border:`1.5px solid ${err?C.rose:C.border}`, borderRadius:8, fontSize:14, fontFamily:"inherit", outline:"none", marginBottom:8, boxSizing:"border-box"}}
+          value={pw} onChange={e=>{setPw(e.target.value);setErr(false);}}
+          onKeyDown={e=>e.key==="Enter"&&try_()}/>
+        {err && <p style={{fontSize:12, color:C.rose, marginBottom:8}}>비밀번호가 올바르지 않습니다.</p>}
+        <button onClick={try_} style={{width:"100%", padding:13, background:C.roseDk, color:"#fff", border:"none", borderRadius:10, fontSize:15, fontWeight:700, cursor:"pointer", fontFamily:"inherit"}}>로그인</button>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════
+// 월간 달력
+// ════════════════════════
+function CalendarView({ patients, onDayClick, onLogout, onScan }) {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth());
+
+  const chMonth = (d) => {
+    let m = month + d, y = year;
+    if(m > 11){ m=0; y++; } if(m < 0){ m=11; y--; }
+    setMonth(m); setYear(y);
+  };
+
+  const apptMap = {};
+  patients.forEach(p => {
+    if(!p.apptDate) return;
+    const [py,pm] = p.apptDate.split("-");
+    if(+py===year && +pm-1===month){
+      if(!apptMap[p.apptDate]) apptMap[p.apptDate]=[];
+      apptMap[p.apptDate].push(p);
+    }
+  });
+
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const totalAppts = patients.filter(p=>p.apptDate&&p.apptDate.startsWith(`${year}-${String(month+1).padStart(2,"0")}`)).length;
+
+  return (
+    <div style={s.page}>
+      <div style={{...s.header, justifyContent:"space-between"}}>
+        <div>
+          <div style={{fontSize:10, letterSpacing:".16em", color:C.rose, textTransform:"uppercase"}}>DRESS Plastic Surgery</div>
+          <div style={{fontSize:16, fontWeight:700, color:C.ink}}>예약 관리</div>
+        </div>
+        <button onClick={onLogout} style={{background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"6px 12px", fontSize:12, color:C.inkMd, cursor:"pointer", fontFamily:"inherit"}}>로그아웃</button>
+      </div>
+
+      <div style={{padding:"12px 16px 0"}}>
+        <button onClick={onScan} style={{width:"100%", background:C.roseDk, border:"none", borderRadius:10, padding:"12px 0", fontSize:14, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>
+          📷 QR 코드 스캔 (내원 환자 확인)
+        </button>
+      </div>
+
+      <div style={{padding:"16px 16px 80px"}}>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16}}>
+          <button onClick={()=>chMonth(-1)} style={{width:36, height:36, border:`1px solid ${C.border}`, borderRadius:"50%", background:C.white, fontSize:18, cursor:"pointer", color:C.inkMd}}>‹</button>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:20, fontWeight:700, color:C.ink}}>{year}년 {MONTHS[month]}</div>
+            <div style={{fontSize:12, color:C.inkLt, marginTop:2}}>이달 예약 {totalAppts}건</div>
+          </div>
+          <button onClick={()=>chMonth(1)} style={{width:36, height:36, border:`1px solid ${C.border}`, borderRadius:"50%", background:C.white, fontSize:18, cursor:"pointer", color:C.inkMd}}>›</button>
+        </div>
+
+        <div style={{background:C.white, borderRadius:16, boxShadow:"0 2px 10px rgba(43,34,36,.07)", overflow:"hidden", marginBottom:16}}>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", background:C.roseLt, padding:"8px 0"}}>
+            {DAYS.map((d,i)=>(
+              <div key={d} style={{textAlign:"center", fontSize:11, fontWeight:700, color:i===0?"#C06060":i===6?"#6080C0":C.inkMd}}>{d}</div>
+            ))}
+          </div>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:1, padding:"4px"}}>
+            {Array(firstDay).fill(null).map((_,i)=><div key={"e"+i}/>)}
+            {Array(daysInMonth).fill(null).map((_,i)=>{
+              const d = i+1;
+              const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+              const dow = new Date(year,month,d).getDay();
+              const appts = apptMap[dateStr]||[];
+              const isToday = dateStr===todayStr;
+              const hasAppt = appts.length > 0;
+              return (
+                <div key={d} onClick={()=>hasAppt&&onDayClick(dateStr, appts)}
+                  style={{ padding:"6px 4px", borderRadius:10, cursor:hasAppt?"pointer":"default", background:isToday?"rgba(200,145,154,.08)":"transparent", minHeight:52 }}>
+                  <div style={{ width:26, height:26, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 3px", background:isToday?C.rose:"transparent", fontSize:13, fontWeight:isToday?700:400, color:isToday?"#fff":dow===0?"#C06060":dow===6?"#6080C0":C.ink }}>{d}</div>
+                  {hasAppt && (
+                    <div style={{textAlign:"center"}}>
+                      <div style={{background:C.rose, color:"#fff", borderRadius:10, fontSize:10, fontWeight:700, padding:"1px 5px", display:"inline-block"}}>{appts.length}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {apptMap[todayStr]&&apptMap[todayStr].length>0 && (
+          <div style={s.card}>
+            <div style={{fontSize:12, fontWeight:700, color:C.roseDk, marginBottom:10}}>📅 오늘 예약</div>
+            {[...apptMap[todayStr]].sort((a,b)=>(a.apptTime||"").localeCompare(b.apptTime||"")).map(p=>(
+              <div key={p.id} onClick={()=>onDayClick(todayStr,[p])} style={{display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${C.border}`, cursor:"pointer"}}>
+                <div style={{width:40, height:40, borderRadius:"50%", background:C.roseLt, display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, fontWeight:700, color:C.roseDk, flexShrink:0}}>{p.name?.[0]||"?"}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700, fontSize:14, color:C.ink}}>{p.name}</div>
+                  <div style={{fontSize:12, color:C.inkLt}}>{p.apptTime} · {p.route||"—"}</div>
+                </div>
+                <span style={{color:C.inkLt, fontSize:18}}>›</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════
+// 그날 예약 목록
+// ════════════════════════
+function DayView({ dateStr, patients, onBack, onSelect }) {
+  const [y,m,d] = dateStr.split("-");
+  const dow = DAYS[new Date(+y,+m-1,+d).getDay()];
+  const sorted = [...patients].sort((a,b)=>(a.apptTime||"").localeCompare(b.apptTime||""));
+  return (
+    <div style={s.page}>
+      <div style={s.header}>
+        <button onClick={onBack} style={s.backBtn}>←</button>
+        <div>
+          <div style={{fontSize:16, fontWeight:700, color:C.ink}}>{y}년 {m}월 {d}일 ({dow})</div>
+          <div style={{fontSize:12, color:C.inkLt}}>예약 {patients.length}명</div>
+        </div>
+      </div>
+      <div style={{padding:"16px"}}>
+        {sorted.map(p=>(
+          <div key={p.id} onClick={()=>onSelect(p)}
+            style={{...s.card, display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:10}}>
+            <div style={{textAlign:"center", flexShrink:0, width:48}}>
+              <div style={{fontSize:15, fontWeight:700, color:C.rose}}>{p.apptTime||"—"}</div>
+            </div>
+            <div style={{width:1, height:40, background:C.border, flexShrink:0}}/>
+            <div style={{width:40, height:40, borderRadius:"50%", background:C.roseLt, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, fontWeight:700, color:C.roseDk, flexShrink:0}}>{p.name?.[0]||"?"}</div>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700, fontSize:15, color:C.ink}}>{p.name}</div>
+              <div style={{fontSize:12, color:C.inkLt, marginTop:2}}>{p.phone} · {p.route||"—"}</div>
+            </div>
+            <span style={{color:C.inkLt, fontSize:20}}>›</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════
+// 환자 상세 (A4 차트)
+// ════════════════════════
+function PatientDetail({ patient: p, onBack, onDelete }) {
+  const chartRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+
+  const fmtDt = (iso) => iso ? new Date(iso).toLocaleString("ko-KR",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}) : "-";
+  const routeLabel = [p.route, p.routeCafeName&&`- ${p.routeCafeName}`, p.routeNick&&`(${p.routeNick})`, p.routeRefName&&`— ${p.routeRefName} ${p.routeRefPhone}`].filter(Boolean).join(" ");
+
+  const saveImage = async () => {
+    setSaving(true);
+    try {
+      if(!window.html2canvas){
+        await new Promise((res,rej)=>{
+          const sc=document.createElement("script");
+          sc.src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+          sc.onload=res; sc.onerror=rej; document.head.appendChild(sc);
+        });
+      }
+      const canvas = await window.html2canvas(chartRef.current, {scale:2, useCORS:true, backgroundColor:"#ffffff"});
+      const link = document.createElement("a");
+      link.download = `접수차트_${p.name}_${p.apptDate}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    } catch(e){ alert("이미지 저장 중 오류가 발생했습니다."); }
+    setSaving(false);
+  };
+
+  const TH = {background:"#FDF0F1", padding:"8px 12px", fontSize:11, fontWeight:700, color:C.roseDk, border:`1px solid ${C.border}`, whiteSpace:"nowrap", verticalAlign:"middle", width:88};
+  const TD = {padding:"8px 12px", fontSize:12, color:C.ink, border:`1px solid ${C.border}`, verticalAlign:"middle"};
+  const SEC = {background:C.roseDk, color:"#fff", fontSize:11, fontWeight:700, padding:"6px 12px", letterSpacing:".06em", border:`1px solid ${C.roseDk}`};
+
+  return (
+    <div style={{fontFamily:"'Noto Sans KR',sans-serif", background:"#c8c8c8", minHeight:"100vh", paddingBottom:40}}>
+      <div style={{background:C.white, borderBottom:`1px solid ${C.border}`, padding:"10px 16px", display:"flex", gap:8, alignItems:"center", position:"sticky", top:0, zIndex:100}}>
+        <button onClick={onBack} style={{background:"none", border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 14px", fontSize:13, color:C.inkMd, cursor:"pointer", fontFamily:"inherit"}}>← 목록</button>
+        <span style={{flex:1, fontSize:12, color:C.inkMd}}>이미지로 저장하거나 스크린샷으로 캡처하세요</span>
+        <button onClick={saveImage} disabled={saving}
+          style={{background:C.rose, border:"none", borderRadius:8, padding:"8px 18px", fontSize:13, fontWeight:700, color:"#fff", cursor:"pointer", fontFamily:"inherit", opacity:saving?0.6:1}}>
+          {saving?"저장 중...":"📥 이미지 저장"}
+        </button>
+        <button onClick={()=>onDelete(p.id)} style={{background:"none", border:`1px solid ${C.rose}`, borderRadius:8, padding:"8px 12px", fontSize:13, color:C.rose, cursor:"pointer", fontFamily:"inherit"}}>삭제</button>
+      </div>
+
+      <div ref={chartRef} style={{background:"#ffffff", width:794, minHeight:1000, margin:"24px auto", padding:"40px 44px", boxSizing:"border-box", boxShadow:"0 6px 32px rgba(0,0,0,.20)", fontFamily:"'Noto Sans KR',sans-serif"}}>
+        <div style={{display:"flex", alignItems:"flex-end", justifyContent:"space-between", borderBottom:`3px solid ${C.roseDk}`, paddingBottom:14, marginBottom:20}}>
+          <div>
+            <div style={{fontSize:24, fontWeight:700, color:C.roseDk, letterSpacing:".04em"}}>드레스성형외과</div>
+            <div style={{fontSize:10, color:C.inkLt, letterSpacing:".14em", marginTop:3}}>DRESS PLASTIC SURGERY</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:16, fontWeight:700, color:C.ink}}>사전 접수 차트</div>
+            <div style={{fontSize:10, color:C.inkLt, marginTop:4}}>접수일시 : {fmtDt(p.submittedAt)}</div>
+          </div>
+        </div>
+        <table style={{width:"100%", borderCollapse:"collapse", marginBottom:18}}>
+          <tbody>
+            <tr><td colSpan={4} style={SEC}>▸ 예약 정보</td></tr>
+            <tr>
+              <td style={TH}>예약 날짜</td><td style={{...TD, width:"28%"}}>{p.apptDate||"—"}</td>
+              <td style={{...TH, width:80}}>예약 시간</td><td style={TD}>{p.apptTime||"—"}</td>
+            </tr>
+            <tr><td style={TH}>방문 경로</td><td colSpan={3} style={TD}>{routeLabel||"—"}</td></tr>
+            <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
+            <tr><td colSpan={4} style={SEC}>▸ 상담 정보</td></tr>
+            <tr><td style={TH}>상담 분야</td><td colSpan={3} style={TD}>{p.consultField||"—"}</td></tr>
+            {p.eyeTiming&&<tr><td style={TH}>눈수술 시기</td><td colSpan={3} style={TD}>{p.eyeTiming}</td></tr>}
+            <tr><td style={TH}>시술 경험</td><td colSpan={3} style={TD}>{p.experience||"—"}</td></tr>
+            <tr><td style={TH}>이상 증상</td><td colSpan={3} style={TD}>{p.symptom||"—"}</td></tr>
+            <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
+            <tr><td colSpan={4} style={SEC}>▸ 환자 정보</td></tr>
+            <tr>
+              <td style={TH}>성&nbsp;&nbsp;&nbsp;명</td><td style={TD}>{p.name||"—"}</td>
+              <td style={TH}>주민번호</td><td style={TD}>{p.ssn||"—"}</td>
+            </tr>
+            <tr>
+              <td style={TH}>연 락 처</td><td style={TD}>{p.phone||"—"}</td>
+              <td style={TH}>보호자 연락처</td><td style={TD}>{p.guardianPhone||"—"}</td>
+            </tr>
+            <tr><td style={TH}>주&nbsp;&nbsp;&nbsp;소</td><td colSpan={3} style={TD}>{p.address||"—"}</td></tr>
+            <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
+            <tr><td colSpan={4} style={SEC}>▸ 건강 정보</td></tr>
+            <tr><td style={TH}>지&nbsp;&nbsp;&nbsp;병</td><td colSpan={3} style={TD}>{p.diseases||"—"}</td></tr>
+            <tr><td style={TH}>복 용 약</td><td colSpan={3} style={TD}>{p.meds||"—"}</td></tr>
+            <tr><td style={TH}>알레르기</td><td colSpan={3} style={TD}>{p.allergy||"—"}</td></tr>
+            <tr><td colSpan={4} style={{...SEC, paddingTop:5}}></td></tr>
+            <tr><td colSpan={4} style={SEC}>▸ 동의 사항</td></tr>
+            <tr>
+              <td style={TH}>개인정보</td><td style={TD}>{p.agreePrivacy?"✓ 동의":"미동의"}</td>
+              <td style={TH}>CCTV</td><td style={TD}>{p.agreeCCTV?"✓ 동의":"미동의"}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style={{border:`1.5px solid ${C.border}`, borderRadius:8, padding:"16px 20px", display:"flex", gap:24, alignItems:"stretch", marginBottom:18}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:11, fontWeight:700, color:C.roseDk, marginBottom:10}}>본인 확인 및 서명</div>
+            <div style={{fontSize:11, color:C.inkMd, lineHeight:1.9, marginBottom:14}}>
+              위 모든 사항을 충분히 읽고 이해하였으며,<br/>사실에 근거하여 성실히 작성하였음을 확인합니다.
+            </div>
+            <div style={{fontSize:13, color:C.ink}}>이름 : <b style={{fontSize:15}}>{p.signName||p.name||"—"}</b></div>
+          </div>
+          <div style={{width:210, flexShrink:0, border:`1.5px solid ${C.border}`, borderRadius:6, overflow:"hidden", background:"#fafafa", display:"flex", alignItems:"center", justifyContent:"center", minHeight:90}}>
+            {p.sig&&p.sig.length>6
+              ? <img src={p.sig} alt="서명" style={{width:"100%", height:90, objectFit:"contain"}}/>
+              : <span style={{fontSize:11, color:C.inkLt}}>서명 없음</span>
+            }
+          </div>
+        </div>
+        <div style={{display:"flex", justifyContent:"space-between", fontSize:9, color:C.inkLt, borderTop:`1px solid ${C.border}`, paddingTop:10}}>
+          <span>* 본 차트는 내원 전 사전 작성된 접수 자료입니다.</span>
+          <span>No. {p.id}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════
+// 앱 루트
+// ════════════════════════
+function App() {
+  const [authed, setAuthed] = useState(false);
+  const [patients, setPatients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("calendar");
+  const [dayData, setDayData] = useState({ dateStr:"", patients:[] });
+  const [selected, setSelected] = useState(null);
+  const [detailBack, setDetailBack] = useState("day");
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const pendingIdRef = useRef(new URLSearchParams(window.location.search).get("id"));
+
+  const load = async () => {
+    setLoading(true);
+    try { setPatients(await loadPatients()); }
+    catch(_){ setPatients([]); }
+    setLoading(false);
+  };
+
+  useEffect(()=>{ if(authed) load(); }, [authed]);
+
+  // URL ?id= 파라미터로 직접 환자 차트 열기
+  useEffect(()=>{
+    if(!authed || loading || !pendingIdRef.current) return;
+    const id = pendingIdRef.current;
+    const found = patients.find(p => p.id === id);
+    if(found){
+      pendingIdRef.current = null;
+      setSelected(found);
+      setDetailBack("calendar");
+      setView("detail");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [authed, loading, patients]);
+
+  const handleDelete = async (id) => {
+    if(!confirm("이 접수 기록을 삭제하시겠습니까?")) return;
+    await deletePatient(id);
+    setPatients(prev => prev.filter(p=>p.id!==id));
+    setView("calendar");
+  };
+
+  const handleScanFound = (patient) => {
+    setSelected(patient);
+    setDetailBack("calendar");
+    setScannerOpen(false);
+    setView("detail");
+  };
+
+  if(!authed) return <Login onLogin={()=>setAuthed(true)}/>;
+  if(loading) return (
+    <div style={{...s.page, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:12, color:C.inkLt}}>
+      <div style={{fontSize:32}}>🌸</div>
+      <div style={{fontSize:14}}>불러오는 중...</div>
+    </div>
+  );
+
+  return (
+    <>
+      {view==="calendar" && (
+        <CalendarView
+          patients={patients}
+          onDayClick={(dateStr, appts)=>{ setDayData({dateStr, patients:appts}); setView("day"); }}
+          onLogout={()=>{ setAuthed(false); setView("calendar"); }}
+          onScan={()=>setScannerOpen(true)}
+        />
+      )}
+      {view==="day" && (
+        <DayView
+          dateStr={dayData.dateStr}
+          patients={dayData.patients}
+          onBack={()=>setView("calendar")}
+          onSelect={p=>{ setSelected(p); setDetailBack("day"); setView("detail"); }}
+        />
+      )}
+      {view==="detail" && (
+        <PatientDetail
+          patient={selected}
+          onBack={()=>setView(detailBack)}
+          onDelete={handleDelete}
+        />
+      )}
+      {scannerOpen && (
+        <QRScanner
+          patients={patients}
+          onFound={handleScanFound}
+          onClose={()=>setScannerOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
