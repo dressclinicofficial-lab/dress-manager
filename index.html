@@ -17,8 +17,8 @@
 <!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<!-- jsQR 미리 로드 -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<!-- ZXing QR 스캐너 -->
+<script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -66,93 +66,77 @@ const s = {
 const inp = { width:"100%", padding:"10px 12px", border:`1.5px solid ${C.border}`, borderRadius:8, fontFamily:"inherit", fontSize:14, color:C.ink, background:C.white, outline:"none", boxSizing:"border-box" };
 
 // ════════════════════════
-// QR 스캐너
+// QR 스캐너 (ZXing)
 // ════════════════════════
 function QRScanner({ patients, onFound, onClose }) {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const streamRef = useRef(null);
-  const rafRef = useRef(null);
+  const readerRef = useRef(null);
   const [manualCode, setManualCode] = useState("");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("카메라 시작 중...");
-  const foundRef = useRef(false);
-
-  const [scanned, setScanned] = useState("");
 
   const tryFind = (code) => {
     const target = (code||"").trim();
     if(!target) return;
-    setScanned(target); // 읽힌 값 표시
     const found = patients.find(p => p.id === target);
     if(found){ onFound(found); }
     else {
-      setError(`읽힌 코드: "${target}"\n일치하는 접수 정보를 찾을 수 없어요.\n아래에 코드를 직접 입력하거나 복사해서 넣어보세요.`);
-      setManualCode(target); // 읽힌 값 자동으로 수동 입력란에 넣기
-      foundRef.current = false; // 재시도 허용
+      setError(`읽힌 코드: "${target}"\n일치하는 접수 정보를 찾을 수 없어요.`);
+      setManualCode(target);
     }
   };
 
   useEffect(() => {
     let stopped = false;
 
-    const startCamera = async () => {
+    const start = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
-        if(stopped){ stream.getTracks().forEach(t=>t.stop()); return; }
-        streamRef.current = stream;
-        const video = videoRef.current;
-        video.srcObject = stream;
-        video.setAttribute("playsinline", true);
-        await video.play();
-        setStatus("QR 코드를 화면에 비춰주세요");
+        const ZXing = window.ZXing;
+        if(!ZXing){ setError("스캐너 로딩 실패. 확인 코드를 직접 입력해 주세요."); return; }
 
-        // QR 스캔 루프
-        const scan = () => {
-          if(stopped || foundRef.current) return;
-          const v = videoRef.current, c = canvasRef.current;
-          if(v && v.readyState === v.HAVE_ENOUGH_DATA && c){
-            c.width = v.videoWidth;
-            c.height = v.videoHeight;
-            const ctx = c.getContext("2d");
-            ctx.drawImage(v, 0, 0, c.width, c.height);
-            const imageData = ctx.getImageData(0, 0, c.width, c.height);
-            if(window.jsQR){
-              // attemptBoth: 밝은/어두운 QR 모두 시도
-              const code = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
-              if(code && code.data){
-                foundRef.current = true;
-                tryFind(code.data);
-                return;
-              }
-            }
+        const reader = new ZXing.BrowserQRCodeReader();
+        readerRef.current = reader;
+
+        const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+        if(!devices || devices.length === 0){
+          setError("카메라를 찾을 수 없어요. 확인 코드를 직접 입력해 주세요.");
+          return;
+        }
+
+        // 후면 카메라 우선
+        const back = devices.find(d =>
+          d.label.toLowerCase().includes("back") ||
+          d.label.toLowerCase().includes("rear") ||
+          d.label.includes("후면")
+        ) || devices[devices.length - 1];
+
+        setStatus("QR 코드를 네모 안에 비춰주세요");
+
+        await reader.decodeFromVideoDevice(
+          back.deviceId,
+          videoRef.current,
+          (result, err) => {
+            if(stopped) return;
+            if(result){ tryFind(result.getText()); }
           }
-          rafRef.current = requestAnimationFrame(scan);
-        };
-        rafRef.current = requestAnimationFrame(scan);
-
+        );
       } catch(e) {
         if(!stopped){
           setStatus("");
           if(e.name === "NotAllowedError"){
-            setError("카메라 권한이 거부되었어요.\n브라우저 설정에서 카메라 권한을 허용해 주세요.\n\n아래 확인 코드 입력을 이용해 주세요.");
-          } else if(e.name === "NotFoundError"){
-            setError("카메라를 찾을 수 없어요.\n아래 확인 코드 입력을 이용해 주세요.");
+            setError("카메라 권한이 거부되었어요.\n브라우저 설정에서 허용 후 다시 시도해 주세요.\n\n아래 확인 코드를 직접 입력해 주세요.");
           } else {
-            setError(`카메라 오류: ${e.message}\n아래 확인 코드 입력을 이용해 주세요.`);
+            setError("카메라 오류가 발생했어요.\n아래 확인 코드를 직접 입력해 주세요.");
           }
         }
       }
     };
 
-    startCamera();
+    start();
 
     return () => {
       stopped = true;
-      cancelAnimationFrame(rafRef.current);
-      if(streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if(readerRef.current){ try{ readerRef.current.reset(); }catch(e){} }
     };
   }, []);
 
@@ -167,7 +151,6 @@ function QRScanner({ patients, onFound, onClose }) {
         {/* 카메라 뷰 */}
         <div style={{ position:"relative", borderRadius:12, overflow:"hidden", background:"#111", marginBottom:14, aspectRatio:"4/3" }}>
           <video ref={videoRef} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} muted playsInline />
-          <canvas ref={canvasRef} style={{ display:"none" }} />
           {/* 스캔 가이드 */}
           <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", pointerEvents:"none" }}>
             <div style={{ width:180, height:180, border:"3px solid rgba(200,145,154,.8)", borderRadius:12, boxShadow:"0 0 0 9999px rgba(0,0,0,.35)" }}/>
@@ -182,11 +165,6 @@ function QRScanner({ patients, onFound, onClose }) {
         {error && (
           <div style={{ fontSize:12, color:C.rose, marginBottom:12, lineHeight:1.7, background:C.roseLt, borderRadius:8, padding:"10px 12px", whiteSpace:"pre-line" }}>
             {error}
-          </div>
-        )}
-        {!error && scanned && (
-          <div style={{ fontSize:12, color:C.inkMd, marginBottom:12, background:"#f0f9f0", borderRadius:8, padding:"10px 12px" }}>
-            📡 읽힌 코드: <b>{scanned}</b>
           </div>
         )}
 
