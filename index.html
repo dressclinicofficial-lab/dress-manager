@@ -79,19 +79,26 @@ function QRScanner({ patients, onFound, onClose }) {
   const stoppedRef = useRef(false);
   const foundRef = useRef(false);
 
+  // QR 인식되면 입력란에 채우기만 (자동이동 X)
+  const onQRRead = (code) => {
+    const target = (code||"").trim();
+    if(!target) return;
+    foundRef.current = true; // 스캔 중지
+    setManualCode(target);
+    setStatus("✅ QR 인식 완료! 확인 버튼을 눌러주세요");
+    setError("");
+  };
+
+  // 확인 버튼 누르면 환자 찾기
   const tryFind = (code) => {
     const target = (code||"").trim();
     if(!target) return;
     const found = patients.find(p => p.id === target);
     if(found){
-      stoppedRef.current = true;
-      cancelAnimationFrame(rafRef.current);
       if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
       onFound(found);
     } else {
       setError(`"${target}" — 일치하는 환자를 찾을 수 없어요.`);
-      setManualCode(target);
-      foundRef.current = false;
     }
   };
 
@@ -137,7 +144,7 @@ function QRScanner({ patients, onFound, onClose }) {
               });
               if(result && result.data){
                 foundRef.current = true;
-                tryFind(result.data);
+                onQRRead(result.data);
                 return;
               }
             }
@@ -232,18 +239,36 @@ function QRScanner({ patients, onFound, onClose }) {
         )}
 
         <div style={{height:1,background:C.border,marginBottom:12}}/>
-        <div style={{fontSize:12,color:C.inkMd,marginBottom:8,fontWeight:600}}>확인 코드 직접 입력</div>
-        <div style={{display:"flex",gap:8}}>
-          <input style={inp} placeholder="환자 화면의 확인 코드"
+        <div style={{fontSize:12,color:C.inkMd,marginBottom:8,fontWeight:600}}>
+          {manualCode ? "📡 QR 인식됨 — 확인 버튼을 눌러주세요" : "확인 코드 직접 입력"}
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom: manualCode ? 10 : 0}}>
+          <input style={{
+            ...inp,
+            borderColor: manualCode ? C.rose : C.border,
+            fontWeight: manualCode ? 700 : 400,
+            fontSize: manualCode ? 16 : 14,
+          }}
+            placeholder="QR 스캔 또는 확인 코드 입력"
             value={manualCode}
             onChange={e=>{setManualCode(e.target.value);setError("");}}
             onKeyDown={e=>e.key==="Enter"&&tryFind(manualCode)}
           />
-          <button onClick={()=>tryFind(manualCode)}
-            style={{background:C.roseDk,border:"none",borderRadius:8,padding:"0 16px",fontSize:13,fontWeight:700,color:"#fff",cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
-            확인
-          </button>
         </div>
+        <button onClick={()=>tryFind(manualCode)}
+          disabled={!manualCode}
+          style={{
+            width:"100%", padding:"14px 0",
+            background: manualCode ? C.roseDk : C.border,
+            border:"none", borderRadius:10,
+            fontSize:15, fontWeight:700,
+            color: manualCode ? "#fff" : C.inkLt,
+            cursor: manualCode ? "pointer" : "not-allowed",
+            fontFamily:"inherit",
+            transition:"all .2s"
+          }}>
+          {manualCode ? "✅ 확인 — 환자 차트 열기" : "QR을 비춰주세요"}
+        </button>
       </div>
     </div>
   );
