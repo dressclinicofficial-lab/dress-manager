@@ -484,6 +484,7 @@ function App() {
   const [selected, setSelected] = useState(null);
   const [detailBack, setDetailBack] = useState("day");
   const [scannerOpen, setScannerOpen] = useState(false);
+  const pendingIdRef = useRef(new URLSearchParams(window.location.search).get("id"));
 
   const load = async () => {
     setLoading(true);
@@ -493,6 +494,20 @@ function App() {
   };
 
   useEffect(()=>{ if(authed) load(); }, [authed]);
+
+  // URL ?id= 파라미터로 직접 환자 차트 열기
+  useEffect(()=>{
+    if(!authed || loading || !pendingIdRef.current) return;
+    const id = pendingIdRef.current;
+    const found = patients.find(p => p.id === id);
+    if(found){
+      pendingIdRef.current = null;
+      setSelected(found);
+      setDetailBack("calendar");
+      setView("detail");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [authed, loading, patients]);
 
   const handleDelete = async (id) => {
     if(!confirm("이 접수 기록을 삭제하시겠습니까?")) return;
